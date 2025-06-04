@@ -65,6 +65,66 @@ using hotstuff::promise_t;
 
 using HotStuff = hotstuff::HotStuffSecp256k1;
 
+std::pair<std::string, std::string> split_ip_port_cport(const std::string &s) {
+    auto ret = trim_all(split(s, ";"));
+    if (ret.size() != 2)
+        throw std::invalid_argument("invalid cport format");
+    return std::make_pair(ret[0], ret[1]);
+}
+
+/** 根据节点id判断该副本是否是失效节点，only for test */
+bool is_faulty_replica(ReplicaID rid, uint16_t faulty_size, uint16_t total_replicas) {
+    if(rid > total_replicas) {
+        throw std::invalid_argument("the faulty replica id exceeds total replicas");
+    }
+    uint16_t faulty_limit = total_replicas / 2; 
+    if(faulty_size > faulty_limit) {
+        throw std::invalid_argument("the number of faulty replicas exceeds the limit");
+    }
+    // alway consider the last `faulty_size` replicas as faulty 
+    if (rid >= total_replicas - faulty_size) {
+        return true; // This replica is considered faulty
+    }
+    return false; 
+}
+
+std::vector<ReplicaID> get_faulty_list(std::string faulty_list_str){
+
+    std::vector<ReplicaID> faulty_replicas = {};
+
+      if (!faulty_list_str.empty()) {
+        // 移除可能的方括号
+        faulty_list_str.erase(std::remove(faulty_list_str.begin(), faulty_list_str.end(), '['), faulty_list_str.end());
+        faulty_list_str.erase(std::remove(faulty_list_str.begin(), faulty_list_str.end(), ']'), faulty_list_str.end());
+        
+        std::vector<std::string> faulty_ids = split(faulty_list_str, ",");
+        for (const auto &id_str : faulty_ids) {
+            try {
+                ReplicaID id = std::stoi(id_str);
+                faulty_replicas.push_back(id);
+                HOTSTUFF_LOG_INFO("Added replica %d to faulty list", id);
+            } catch (std::exception &e) {
+                HOTSTUFF_LOG_WARN("Invalid replica ID in faulty-list: %s", id_str.c_str());
+            }
+        }
+    }
+    return faulty_replicas;
+}
+
+bool is_faulty_replica(uint16_t idx, std::vector<ReplicaID> faulty_replicas){
+    if (faulty_replicas.empty()) {
+        return false; // 如果没有故障副本，则返回false
+    }
+    // 检查idx是否在故障副本列表中
+    for (const auto &faulty_id : faulty_replicas) {
+        if (idx == faulty_id) {
+            return true; // idx在故障副本列表中
+        }
+    }
+    return false; // idx不在故障副本列表中
+}
+
+
 class HotStuffApp: public HotStuff {
     double stat_period;
     double impeach_timeout;
@@ -79,6 +139,9 @@ class HotStuffApp: public HotStuff {
     TimerEvent impeach_timer;
     /** The listen address for client RPC */
     NetAddr clisten_addr;
+
+    /** enable leader fault mode */
+    bool enable_leader_fault;
 
     std::unordered_map<const uint256_t, promise_t> unconfirmed;
 
@@ -129,23 +192,142 @@ class HotStuffApp: public HotStuff {
                 const EventContext &ec,
                 size_t nworker,
                 const Net::Config &repnet_config,
-                const ClientNetwork<opcode_t>::Config &clinet_config);
+                const ClientNetwork<opcode_t>::Config &clinet_config,
+                bool enable_leader_fault = false);
 
     void start(const std::vector<std::tuple<NetAddr, bytearray_t, bytearray_t>> &reps);
     void stop();
 };
 
-std::pair<std::string, std::string> split_ip_port_cport(const std::string &s) {
-    auto ret = trim_all(split(s, ";"));
-    if (ret.size() != 2)
-        throw std::invalid_argument("invalid cport format");
-    return std::make_pair(ret[0], ret[1]);
-}
-
 salticidae::BoxObj<HotStuffApp> papp = nullptr;
 
+HotStuffApp::HotStuffApp(uint32_t blk_size,
+                        double stat_period,
+                        double impeach_timeout,
+                        ReplicaID idx,
+                        const bytearray_t &raw_privkey,
+                        NetAddr plisten_addr,
+                        NetAddr clisten_addr,
+                        hotstuff::pacemaker_bt pmaker,
+                        const EventContext &ec,
+                        size_t nworker,
+                        const Net::Config &repnet_config,
+                        const ClientNetwork<opcode_t>::Config &clinet_config,
+                        bool is_leader_fault):
+    HotStuff(blk_size, idx, raw_privkey, plisten_addr,
+         std::move(pmaker), ec, nworker, repnet_config, is_leader_fault),
+    stat_period(stat_period),
+    impeach_timeout(impeach_timeout),
+    ec(ec),
+    enable_leader_fault(is_leader_fault),
+    cn(req_ec, clinet_config),
+    clisten_addr(clisten_addr) {
+    /* prepare the thread used for sending back confirmations */
+    resp_tcall = new salticidae::ThreadCall(resp_ec);
+    req_tcall = new salticidae::ThreadCall(req_ec);
+    resp_queue.reg_handler(resp_ec, [this](resp_queue_t &q) {
+        std::pair<Finality, NetAddr> p;
+        while (q.try_dequeue(p))
+        {
+            try {
+                cn.send_msg(MsgRespCmd(std::move(p.first)), p.second);
+            } catch (std::exception &err) {
+                HOTSTUFF_LOG_WARN("unable to send to the client: %s", err.what());
+            }
+        }
+        return false;
+    });
+
+    /* register the handlers for msg from clients */
+    cn.reg_handler(salticidae::generic_bind(&HotStuffApp::client_request_cmd_handler, this, _1, _2));
+    cn.start();
+    cn.listen(clisten_addr);
+}
+
+void HotStuffApp::client_request_cmd_handler(MsgReqCmd &&msg, const conn_t &conn) {
+    const NetAddr addr = conn->get_addr();
+    auto cmd = parse_cmd(msg.serialized);
+    const auto &cmd_hash = cmd->get_hash();
+    HOTSTUFF_LOG_DEBUG("processing %s", std::string(*cmd).c_str());
+    exec_command(cmd_hash, [this, addr](Finality fin) {
+        resp_queue.enqueue(std::make_pair(fin, addr));
+    });
+}
+
+void HotStuffApp::start(const std::vector<std::tuple<NetAddr, bytearray_t, bytearray_t>> &reps) {
+    ev_stat_timer = TimerEvent(ec, [this](TimerEvent &) {
+        HotStuff::print_stat();
+        HotStuffApp::print_stat();
+        //HotStuffCore::prune(100);
+        ev_stat_timer.add(stat_period);
+    });
+    ev_stat_timer.add(stat_period);
+    impeach_timer = TimerEvent(ec, [this](TimerEvent &) {
+        if (get_decision_waiting().size())
+        {   
+            get_pace_maker()->impeach();
+        }
+        reset_imp_timer();
+    });
+    impeach_timer.add(impeach_timeout);
+    HOTSTUFF_LOG_INFO("** starting the system with parameters **");
+    HOTSTUFF_LOG_INFO("blk_size = %lu", blk_size);
+    HOTSTUFF_LOG_INFO("conns = %lu", HotStuff::size());
+    HOTSTUFF_LOG_INFO("** starting the event loop...");
+    HotStuff::start(reps);
+    cn.reg_conn_handler([this](const salticidae::ConnPool::conn_t &_conn, bool connected) {
+        auto conn = salticidae::static_pointer_cast<conn_t::type>(_conn);
+        if (connected)
+            client_conns.insert(conn);
+        else
+            client_conns.erase(conn);
+        return true;
+    });
+    req_thread = std::thread([this]() { req_ec.dispatch(); });
+    resp_thread = std::thread([this]() { resp_ec.dispatch(); });
+    /* enter the event main loop */
+    ec.dispatch();
+}
+
+void HotStuffApp::stop() {
+    papp->req_tcall->async_call([this](salticidae::ThreadCall::Handle &) {
+        req_ec.stop();
+    });
+    papp->resp_tcall->async_call([this](salticidae::ThreadCall::Handle &) {
+        resp_ec.stop();
+    });
+
+    req_thread.join();
+    resp_thread.join();
+    ec.stop();
+}
+
+void HotStuffApp::print_stat() const {
+#ifdef HOTSTUFF_MSG_STAT
+    HOTSTUFF_LOG_INFO("--- client msg. (10s) ---");
+    size_t _nsent = 0;
+    size_t _nrecv = 0;
+    for (const auto &conn: client_conns)
+    {
+        if (conn == nullptr) continue;
+        size_t ns = conn->get_nsent();
+        size_t nr = conn->get_nrecv();
+        size_t nsb = conn->get_nsentb();
+        size_t nrb = conn->get_nrecvb();
+        conn->clear_msgstat();
+        HOTSTUFF_LOG_INFO("%s: %u(%u), %u(%u)",
+            std::string(conn->get_addr()).c_str(), ns, nsb, nr, nrb);
+        _nsent += ns;
+        _nrecv += nr;
+    }
+    HOTSTUFF_LOG_INFO("--- end client msg. ---");
+#endif
+}
+
+
+
 int main(int argc, char **argv) {
-    Config config("hotstuff.conf");
+    Config config("./configs/hotstuff.conf");
 
     ElapsedTime elapsed;
     elapsed.start();
@@ -164,7 +346,7 @@ int main(int argc, char **argv) {
     auto opt_fixed_proposer = Config::OptValInt::create(1);
     auto opt_base_timeout = Config::OptValDouble::create(1);
     auto opt_prop_delay = Config::OptValDouble::create(1);
-    auto opt_imp_timeout = Config::OptValDouble::create(11);
+    auto opt_imp_timeout = Config::OptValDouble::create(20);
     auto opt_nworker = Config::OptValInt::create(1);
     auto opt_repnworker = Config::OptValInt::create(1);
     auto opt_repburst = Config::OptValInt::create(100);
@@ -173,6 +355,8 @@ int main(int argc, char **argv) {
     auto opt_notls = Config::OptValFlag::create(false);
     auto opt_max_rep_msg = Config::OptValInt::create(4 << 20); // 4M by default
     auto opt_max_cli_msg = Config::OptValInt::create(65536); // 64K by default
+    auto opt_leader_fault = Config::OptValFlag::create(false); // add this option to enable the faulty leaders
+    auto opt_faulty_list = Config::OptValStr::create(""); // add this option for specific faulty replica list
 
     config.add_opt("block-size", opt_blk_size, Config::SET_VAL);
     config.add_opt("parent-limit", opt_parent_limit, Config::SET_VAL);
@@ -197,6 +381,8 @@ int main(int argc, char **argv) {
     config.add_opt("max-rep-msg", opt_max_rep_msg, Config::SET_VAL, 'S', "the maximum replica message size");
     config.add_opt("max-cli-msg", opt_max_cli_msg, Config::SET_VAL, 'S', "the maximum client message size");
     config.add_opt("help", opt_help, Config::SWITCH_ON, 'h', "show this help info");
+    config.add_opt("leader-fault", opt_leader_fault, Config::SWITCH_ON, 'F', "enable~ faulty leaders (default: false)");
+    config.add_opt("faulty-list", opt_faulty_list, Config::SET_VAL, '\0', "specify list of faulty replicas, e.g., \"0,2,4,6,8\"");
 
     EventContext ec;
     config.parse(argc, argv);
@@ -262,6 +448,20 @@ int main(int argc, char **argv) {
     clinet_config
         .burst_size(opt_cliburst->get())
         .nworker(opt_clinworker->get());
+
+    // 读取并处理faulty-list配置
+    std::vector<ReplicaID> faulty_replicas = get_faulty_list(opt_faulty_list->get());
+    // check if faulty 
+    if(is_faulty_replica(idx,faulty_replicas)) {
+        HOTSTUFF_LOG_INFO("replica %d is considered faulty, existing", idx);
+        exit(0);
+    }
+    // 读取leader-fault配置
+    bool enable_leader_fault = opt_leader_fault->get();
+    HOTSTUFF_LOG_INFO("leader fault mode: %s", enable_leader_fault ? "enabled" : "disabled");
+
+    HOTSTUFF_LOG_INFO("impeach timeout: %f ms", opt_imp_timeout->get());
+
     papp = new HotStuffApp(opt_blk_size->get(),
                         opt_stat_period->get(),
                         opt_imp_timeout->get(),
@@ -273,7 +473,8 @@ int main(int argc, char **argv) {
                         ec,
                         opt_nworker->get(),
                         repnet_config,
-                        clinet_config);
+                        clinet_config,
+                        enable_leader_fault); // 传递leader-fault配置
     std::vector<std::tuple<NetAddr, bytearray_t, bytearray_t>> reps;
     for (auto &r: replicas)
     {
@@ -292,123 +493,4 @@ int main(int argc, char **argv) {
     papp->start(reps);
     elapsed.stop(true);
     return 0;
-}
-
-HotStuffApp::HotStuffApp(uint32_t blk_size,
-                        double stat_period,
-                        double impeach_timeout,
-                        ReplicaID idx,
-                        const bytearray_t &raw_privkey,
-                        NetAddr plisten_addr,
-                        NetAddr clisten_addr,
-                        hotstuff::pacemaker_bt pmaker,
-                        const EventContext &ec,
-                        size_t nworker,
-                        const Net::Config &repnet_config,
-                        const ClientNetwork<opcode_t>::Config &clinet_config):
-    HotStuff(blk_size, idx, raw_privkey,
-            plisten_addr, std::move(pmaker), ec, nworker, repnet_config),
-    stat_period(stat_period),
-    impeach_timeout(impeach_timeout),
-    ec(ec),
-    cn(req_ec, clinet_config),
-    clisten_addr(clisten_addr) {
-    /* prepare the thread used for sending back confirmations */
-    resp_tcall = new salticidae::ThreadCall(resp_ec);
-    req_tcall = new salticidae::ThreadCall(req_ec);
-    resp_queue.reg_handler(resp_ec, [this](resp_queue_t &q) {
-        std::pair<Finality, NetAddr> p;
-        while (q.try_dequeue(p))
-        {
-            try {
-                cn.send_msg(MsgRespCmd(std::move(p.first)), p.second);
-            } catch (std::exception &err) {
-                HOTSTUFF_LOG_WARN("unable to send to the client: %s", err.what());
-            }
-        }
-        return false;
-    });
-
-    /* register the handlers for msg from clients */
-    cn.reg_handler(salticidae::generic_bind(&HotStuffApp::client_request_cmd_handler, this, _1, _2));
-    cn.start();
-    cn.listen(clisten_addr);
-}
-
-void HotStuffApp::client_request_cmd_handler(MsgReqCmd &&msg, const conn_t &conn) {
-    const NetAddr addr = conn->get_addr();
-    auto cmd = parse_cmd(msg.serialized);
-    const auto &cmd_hash = cmd->get_hash();
-    HOTSTUFF_LOG_DEBUG("processing %s", std::string(*cmd).c_str());
-    exec_command(cmd_hash, [this, addr](Finality fin) {
-        resp_queue.enqueue(std::make_pair(fin, addr));
-    });
-}
-
-void HotStuffApp::start(const std::vector<std::tuple<NetAddr, bytearray_t, bytearray_t>> &reps) {
-    ev_stat_timer = TimerEvent(ec, [this](TimerEvent &) {
-        HotStuff::print_stat();
-        HotStuffApp::print_stat();
-        //HotStuffCore::prune(100);
-        ev_stat_timer.add(stat_period);
-    });
-    ev_stat_timer.add(stat_period);
-    impeach_timer = TimerEvent(ec, [this](TimerEvent &) {
-        if (get_decision_waiting().size())
-            get_pace_maker()->impeach();
-        reset_imp_timer();
-    });
-    impeach_timer.add(impeach_timeout);
-    HOTSTUFF_LOG_INFO("** starting the system with parameters **");
-    HOTSTUFF_LOG_INFO("blk_size = %lu", blk_size);
-    HOTSTUFF_LOG_INFO("conns = %lu", HotStuff::size());
-    HOTSTUFF_LOG_INFO("** starting the event loop...");
-    HotStuff::start(reps);
-    cn.reg_conn_handler([this](const salticidae::ConnPool::conn_t &_conn, bool connected) {
-        auto conn = salticidae::static_pointer_cast<conn_t::type>(_conn);
-        if (connected)
-            client_conns.insert(conn);
-        else
-            client_conns.erase(conn);
-        return true;
-    });
-    req_thread = std::thread([this]() { req_ec.dispatch(); });
-    resp_thread = std::thread([this]() { resp_ec.dispatch(); });
-    /* enter the event main loop */
-    ec.dispatch();
-}
-
-void HotStuffApp::stop() {
-    papp->req_tcall->async_call([this](salticidae::ThreadCall::Handle &) {
-        req_ec.stop();
-    });
-    papp->resp_tcall->async_call([this](salticidae::ThreadCall::Handle &) {
-        resp_ec.stop();
-    });
-
-    req_thread.join();
-    resp_thread.join();
-    ec.stop();
-}
-
-void HotStuffApp::print_stat() const {
-#ifdef HOTSTUFF_MSG_STAT
-    HOTSTUFF_LOG_INFO("--- client msg. (10s) ---");
-    size_t _nsent = 0;
-    size_t _nrecv = 0;
-    for (const auto &conn: client_conns)
-    {
-        if (conn == nullptr) continue;
-        size_t ns = conn->get_nsent();
-        size_t nr = conn->get_nrecv();
-        size_t nsb = conn->get_nsentb();
-        size_t nrb = conn->get_nrecvb();
-        conn->clear_msgstat();
-        HOTSTUFF_LOG_INFO("%s: %u(%u), %u(%u)",
-            std::string(conn->get_addr()).c_str(), ns, nsb, nr, nrb);
-        _nsent += ns;
-        _nrecv += nr;
-    }
-    HOTSTUFF_LOG_INFO("--- end client msg. ---");
-#endif
 }

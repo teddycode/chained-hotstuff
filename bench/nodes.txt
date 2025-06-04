@@ -1,0 +1,8 @@
+0:127.0.0.1:10000;20000	./configs/hotstuff-sec0.conf
+1:127.0.0.1:10001;20001	./configs/hotstuff-sec1.conf
+2:127.0.0.1:10002;20002	./configs/hotstuff-sec2.conf
+3:127.0.0.1:10003;20003	./configs/hotstuff-sec3.conf
+4:127.0.0.1:10004;20004	./configs/hotstuff-sec4.conf
+5:127.0.0.1:10005;20005	./configs/hotstuff-sec5.conf
+6:127.0.0.1:10006;20006	./configs/hotstuff-sec6.conf
+7:127.0.0.1:10007;20007	./configs/hotstuff-sec7.conf

@@ -8,18 +8,20 @@ if __name__ == "__main__":
     parser.add_argument('--prefix', type=str, default='hotstuff.gen')
     parser.add_argument('--ips', type=str, default=None)
     parser.add_argument('--iter', type=int, default=10)
+    parser.add_argument('--delta', type=float, default=0.05)
     parser.add_argument('--pport', type=int, default=10000)
     parser.add_argument('--cport', type=int, default=20000)
     parser.add_argument('--keygen', type=str, default='./hotstuff-keygen')
     parser.add_argument('--tls-keygen', type=str, default='./hotstuff-tls-keygen')
     parser.add_argument('--nodes', type=str, default='nodes.txt')
     parser.add_argument('--block-size', type=int, default=1)
-    parser.add_argument('--pace-maker', type=str, default='dummy')
+    parser.add_argument('--pace-maker', type=str, default='rr')
     parser.add_argument('--nworker', type=int, default=4)
     parser.add_argument('--repnworker', type=int, default=4)
     parser.add_argument('--clinworker', type=int, default=4)
     parser.add_argument('--repburst', type=int, default=1000)
     parser.add_argument('--cliburst', type=int, default=1000)
+    parser.add_argument('--faulty-list', type=str, default=None, help='Comma-separated list of faulty replica indices, e.g., "0,2,4,6,8"')
     args = parser.parse_args()
 
 
@@ -36,12 +38,9 @@ if __name__ == "__main__":
 
     main_conf = open("{}.conf".format(prefix), 'w')
     nodes = open(args.nodes, 'w')
-    port_count = {}
-    replicas = []
-    for ip in ips:
-        i = port_count.setdefault(ip, 0)
-        port_count[ip] += 1
-        replicas.append("{}:{};{}".format(ip, base_pport + i, base_cport + i))
+    replicas = ["{}:{};{}".format(ip, base_pport + i, base_cport + i)
+                for ip in ips
+                for i in range(iter)]
     p = subprocess.Popen([keygen_bin, '--num', str(len(replicas))],
                         stdout=subprocess.PIPE, stderr=open(os.devnull, 'w'))
     keys = [[t[4:] for t in l.decode('ascii').split()] for l in p.stdout]
@@ -62,6 +61,11 @@ if __name__ == "__main__":
         main_conf.write("cliburst = {}\n".format(args.cliburst))
     if not (args.pace_maker is None):
         main_conf.write("pace-maker = {}\n".format(args.pace_maker))
+    if not (args.delta is None):
+        main_conf.write("base-timeout = {}\n".format(args.delta*5))        
+    if not (args.faulty_list is None):
+        faulty_indices = [int(idx.strip()) for idx in args.faulty_list.split(',')]
+        main_conf.write("faulty-list = [{}]\n".format(','.join(map(str, faulty_indices))))
     for r in zip(replicas, keys, tls_keys, itertools.count(0)):
         main_conf.write("replica = {}, {}, {}\n".format(r[0], r[1][0], r[2][2]))
         r_conf_name = "{}-sec{}.conf".format(prefix, r[3])

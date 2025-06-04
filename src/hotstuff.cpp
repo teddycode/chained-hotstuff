@@ -219,6 +219,7 @@ void HotStuffBase::propose_handler(MsgPropose &&msg, const Net::conn_t &conn) {
 }
 
 void HotStuffBase::vote_handler(MsgVote &&msg, const Net::conn_t &conn) {
+    if(is_leader_crashing) return;  // 404 when in crashing
     const auto &peer = conn->get_peer_id();
     if (peer.is_null()) return;
     msg.postponed_parse(this);
@@ -338,7 +339,8 @@ HotStuffBase::HotStuffBase(uint32_t blk_size,
                     pacemaker_bt pmaker,
                     EventContext ec,
                     size_t nworker,
-                    const Net::Config &netconfig):
+                    const Net::Config &netconfig,
+                    bool enable_leader_crash):
         HotStuffCore(rid, std::move(priv_key)),
         listen_addr(listen_addr),
         blk_size(blk_size),
@@ -347,6 +349,8 @@ HotStuffBase::HotStuffBase(uint32_t blk_size,
         vpool(ec, nworker),
         pn(ec, netconfig),
         pmaker(std::move(pmaker)),
+        is_leader_crashing(false),
+        enable_leader_crash(enable_leader_crash),
 
         fetched(0), delivered(0),
         nsent(0), nrecv(0),
@@ -465,13 +469,36 @@ void HotStuffBase::start(
                 }
                 pmaker->beat().then([this, cmds = std::move(cmds)](ReplicaID proposer) {
                     if (proposer == get_id())
-                        on_propose(cmds, pmaker->get_parents());
+                    {
+                        is_leader_crashing = decide_leader_crash(proposer);
+                        if (!is_leader_crashing) {
+                            HOTSTUFF_LOG_INFO("replica %u is turn to propose commands", proposer);
+                            on_propose(cmds, pmaker->get_parents());
+                        } 
+                    }
                 });
                 return true;
             }
         }
         return false;
     });
+}
+
+void HotStuffBase::try_to_wakeup(ReplicaID proposer){
+    if(is_leader_crashing) {// 如果上次是崩溃的，立即上线
+        is_leader_crashing = false;
+        LOG_DEBUG("replica %u is turn to online!", proposer);
+    }
+}
+
+bool HotStuffBase::decide_leader_crash(ReplicaID proposer){
+    // 如果禁用了leader崩溃功能，直接返回false
+    if (!enable_leader_crash) return false;
+    // view从1开始计数
+    if (proposer % 2 == 0) { 
+        return true;
+    }
+    return false;
 }
 
 }

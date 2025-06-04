@@ -133,6 +133,10 @@ class HotStuffBase: public HotStuffCore {
     using Net = PeerNetwork<opcode_t>;
     using commit_cb_t = std::function<void(const Finality &)>;
 
+    /** whether perform crash state when selected to be a leader */
+    bool enable_leader_crash;
+    bool is_leader_crashing;
+
     protected:
     /** the binding address in replica network */
     NetAddr listen_addr;
@@ -212,7 +216,8 @@ class HotStuffBase: public HotStuffCore {
             pacemaker_bt pmaker,
             EventContext ec,
             size_t nworker,
-            const Net::Config &netconfig);
+            const Net::Config &netconfig,
+            bool enable_leader_crash = false);
 
     ~HotStuffBase();
 
@@ -222,6 +227,9 @@ class HotStuffBase: public HotStuffCore {
     void exec_command(uint256_t cmd_hash, commit_cb_t callback);
     void start(std::vector<std::tuple<NetAddr, pubkey_bt, uint256_t>> &&replicas,
                 bool ec_loop = false);
+
+    bool decide_leader_crash(ReplicaID rid);
+    void try_to_wakeup(ReplicaID proposer);
 
     size_t size() const { return peers.size(); }
     const auto &get_decision_waiting() const { return decision_waiting; }
@@ -283,7 +291,8 @@ class HotStuff: public HotStuffBase {
             pacemaker_bt pmaker,
             EventContext ec = EventContext(),
             size_t nworker = 4,
-            const Net::Config &netconfig = Net::Config()):
+            const Net::Config &netconfig = Net::Config(),
+            bool enable_leader_fault = false):
         HotStuffBase(blk_size,
                     rid,
                     new PrivKeyType(raw_privkey),
@@ -291,7 +300,8 @@ class HotStuff: public HotStuffBase {
                     std::move(pmaker),
                     ec,
                     nworker,
-                    netconfig) {}
+                    netconfig,
+                    enable_leader_fault) {}
 
     void start(const std::vector<std::tuple<NetAddr, bytearray_t, bytearray_t>> &replicas, bool ec_loop = false) {
         std::vector<std::tuple<NetAddr, pubkey_bt, uint256_t>> reps;
