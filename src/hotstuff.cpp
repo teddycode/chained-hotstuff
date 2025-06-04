@@ -470,11 +470,7 @@ void HotStuffBase::start(
                 pmaker->beat().then([this, cmds = std::move(cmds)](ReplicaID proposer) {
                     if (proposer == get_id())
                     {
-                        is_leader_crashing = decide_leader_crash(proposer);
-                        if (!is_leader_crashing) {
-                            HOTSTUFF_LOG_INFO("replica %u is turn to propose commands", proposer);
-                            on_propose(cmds, pmaker->get_parents());
-                        } 
+                        on_propose(cmds, pmaker->get_parents());
                     }
                 });
                 return true;

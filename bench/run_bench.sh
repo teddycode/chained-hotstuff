@@ -331,7 +331,7 @@ for i in "${rep[@]}"; do
     echo "启动副本 $i"
     REPLICA_ARGS="--conf ${KEYS}/hotstuff-sec${i}.conf "
     if [ "$LEADER_FAULT" = true ]; then
-        REPLICA_ARGS="${REPLICA_ARGS} --leader-fault"
+        REPLICA_ARGS="${REPLICA_ARGS} --leader-fault --leader-tenure 2.2"
     fi
     nice -n -10  ${BINDIR}/hotstuff-app ${REPLICA_ARGS}  > ${LOGDIR}/log${i}.log 2>&1 &
     # gdb -ex r -ex bt -ex q --args ${BINDIR}/hotstuff-app ${REPLICA_ARGS}  > ${LOGDIR}/log${i}.log 2>&1 &

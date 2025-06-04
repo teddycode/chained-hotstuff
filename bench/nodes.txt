@@ -4,5 +4,3 @@
 3:127.0.0.1:10003;20003	./configs/hotstuff-sec3.conf
 4:127.0.0.1:10004;20004	./configs/hotstuff-sec4.conf
 5:127.0.0.1:10005;20005	./configs/hotstuff-sec5.conf
-6:127.0.0.1:10006;20006	./configs/hotstuff-sec6.conf
-7:127.0.0.1:10007;20007	./configs/hotstuff-sec7.conf
