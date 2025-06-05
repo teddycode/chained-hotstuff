@@ -333,7 +333,7 @@ for i in "${rep[@]}"; do
     if [ "$LEADER_FAULT" = true ]; then
         REPLICA_ARGS="${REPLICA_ARGS} --leader-fault --leader-tenure 2.2"
     fi
-    nice -n -10  ${BINDIR}/hotstuff-app ${REPLICA_ARGS}  > ${LOGDIR}/log${i}.log 2>&1 &
+    ${BINDIR}/hotstuff-app ${REPLICA_ARGS}  > ${LOGDIR}/log${i}.log 2>&1 &
     # gdb -ex r -ex bt -ex q --args ${BINDIR}/hotstuff-app ${REPLICA_ARGS}  > ${LOGDIR}/log${i}.log 2>&1 &
 done
 

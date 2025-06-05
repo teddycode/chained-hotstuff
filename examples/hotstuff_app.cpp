@@ -364,7 +364,8 @@ void HotStuffApp::print_stat() const {
 
 
 int main(int argc, char **argv) {
-    Config config("./configs/hotstuff.conf");
+    Config config("./hotstuff.conf");
+    // Config config("./configs/hotstuff.conf");
 
     ElapsedTime elapsed;
     elapsed.start();
@@ -383,7 +384,7 @@ int main(int argc, char **argv) {
     auto opt_fixed_proposer = Config::OptValInt::create(1);
     auto opt_base_timeout = Config::OptValDouble::create(1);
     auto opt_prop_delay = Config::OptValDouble::create(1);
-    auto opt_imp_timeout = Config::OptValDouble::create(20);
+    auto opt_imp_timeout = Config::OptValDouble::create(8);
     auto opt_nworker = Config::OptValInt::create(1);
     auto opt_repnworker = Config::OptValInt::create(1);
     auto opt_repburst = Config::OptValInt::create(100);
@@ -500,7 +501,7 @@ int main(int argc, char **argv) {
     bool enable_leader_fault = opt_leader_fault->get();
     HOTSTUFF_LOG_INFO("leader fault mode: %s", enable_leader_fault ? "enabled" : "disabled");
 
-    HOTSTUFF_LOG_INFO("impeach timeout: %f ms", opt_imp_timeout->get());
+    HOTSTUFF_LOG_INFO("impeach timeout: %f s", opt_imp_timeout->get());
 
     papp = new HotStuffApp(opt_blk_size->get(),
                         opt_stat_period->get(),

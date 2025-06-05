@@ -26,3 +26,5 @@ bin/*
 bench/configs/*
 bench/logs/*
 bench/results/*
+configs/*
+hotstuff.gen*

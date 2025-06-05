@@ -27,7 +27,7 @@ if __name__ == "__main__":
         host_idx = host_idx_count.setdefault(pub_ip, 0)
         host_idx_count[pub_ip] += 1
         print("replica{} ansible_host={} host_idx={} extra_conf={}-sec{}.conf".format(
-                i, pub_ip, host_idx, args.prefix, i))
+                i, pub_ip, i, args.prefix, i))
 
     print("\n[clients]")
     for (i, ip) in enumerate(clients):

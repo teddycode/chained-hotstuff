@@ -9,7 +9,7 @@ ansible_ssh_private_key_file: ~/.ssh/zebra-test.pem
 ansible_connection: ssh
 ansible_user: ubuntu
 # remote directory that keeps the work directory for the running app
-testbed_prefix: "/home/ubuntu/testbed/chstf"
+testbed_prefix: "/home/ubuntu/testbed/chstf/testcase_0_10_0"
 # must use Python 3
 ansible_python_interpreter: /usr/bin/python3
 
@@ -26,7 +26,7 @@ client_bin: "/home/ubuntu/exps/chained-hotstuff/bin/hotstuff-client"
 hs_repo_dir: "/home/ubuntu/exps/chained-hotstuff"
 # local source code path (that will be copied to the remote)
 hs_local_repo_dir: "../../"
-hs_conf_dir: "configs"
+hs_conf_dir: "conf"
 hs_log_dir: "log"
 hs_base_conf: "./hotstuff.gen.conf"
 # enable/disable TLS encrpytion for inter-replica communication
